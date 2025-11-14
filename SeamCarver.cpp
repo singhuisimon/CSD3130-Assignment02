@@ -2,6 +2,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <queue>
 
 SeamCarver::SeamCarver(const std::string& imagePath) {
     image = cv::imread(imagePath);
@@ -76,7 +77,6 @@ std::vector<int> SeamCarver::findVerticalSeamDP(const cv::Mat& energy) {
     int j = minLoc.x;
     seam[rows-1] = j;
     
-    // CORRECTED: Backtrack from bottom to top
     // At each step, find which parent in the previous row led to current position
     for (int i = rows - 2; i >= 0; i--) {
         // We're at column j in row i+1
@@ -167,6 +167,156 @@ std::vector<int> SeamCarver::findHorizontalSeamGreedy(const cv::Mat& energy) {
     cv::transpose(energy, transposedEnergy);
     return findVerticalSeamGreedy(transposedEnergy);
 }
+
+// Graph-based vertical seam: Dijkstra shortest path on a layered pixel graph
+std::vector<int> SeamCarver::findVerticalSeamGraphCut(const cv::Mat& energy) {
+    // Graph-based shortest path (Dijkstra) formulation
+    // energy: CV_64F, size rows x cols
+    const int rows = energy.rows;
+    const int cols = energy.cols;
+    const int numPixels = rows * cols;
+    const int src = numPixels;
+    const int dst = numPixels + 1;
+    const int numNodes = numPixels + 2;
+
+    struct Edge {
+        int to;
+        double w;
+    };
+    std::vector<std::vector<Edge>> adj(numNodes);
+
+    auto idx = [cols](int r, int c) { return r * cols + c; };
+
+    // Edges from src to top row pixels, weight = energy of that pixel
+    for (int c = 0; c < cols; ++c) {
+        double w = energy.at<double>(0, c);
+        adj[src].push_back({ idx(0, c), w });
+    }
+
+    // Edges between rows (downwards, 3-connected)
+    for (int r = 0; r < rows - 1; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            int u = idx(r, c);
+            for (int dc = -1; dc <= 1; ++dc) {
+                int nc = c + dc;
+                if (nc < 0 || nc >= cols) continue;
+                int v = idx(r + 1, nc);
+                double w = energy.at<double>(r + 1, nc);
+                adj[u].push_back({ v, w });
+            }
+        }
+    }
+
+    // Edges from bottom row to dst with zero extra cost
+    for (int c = 0; c < cols; ++c) {
+        int u = idx(rows - 1, c);
+        adj[u].push_back({ dst, 0.0 });
+    }
+
+    // Dijkstra
+    const double INF = std::numeric_limits<double>::infinity();
+    std::vector<double> dist(numNodes, INF);
+    std::vector<int> parent(numNodes, -1);
+
+    struct Node {
+        int v;
+        double d;
+        bool operator<(const Node& o) const { return d > o.d; } // min-heap
+    };
+
+    std::priority_queue<Node> pq;
+    dist[src] = 0.0;
+    pq.push({ src, 0.0 });
+
+    while (!pq.empty()) {
+        Node cur = pq.top();
+        pq.pop();
+        int u = cur.v;
+        double du = cur.d;
+
+        if (du > dist[u]) continue;
+        if (u == dst) break;
+
+        for (const auto& e : adj[u]) {
+            int v = e.to;
+            double nd = du + e.w;
+            if (nd < dist[v]) {
+                dist[v] = nd;
+                parent[v] = u;
+                pq.push({ v, nd });
+            }
+        }
+    }
+
+    // Reconstruct path from src to dst
+    std::vector<int> seam(rows, 0);
+
+    int cur = parent[dst];
+    if (cur == -1) {
+        // Fallback: if for some reason Dijkstra failed, use DP seam
+        return findVerticalSeamDP(energy);
+    }
+
+    std::vector<int> pathPixels;
+    while (cur != -1 && cur != src) {
+        pathPixels.push_back(cur);
+        cur = parent[cur];
+    }
+    std::reverse(pathPixels.begin(), pathPixels.end());
+
+    // In this construction we expect exactly one pixel per row
+    if ((int)pathPixels.size() != rows) {
+        return findVerticalSeamDP(energy);
+    }
+
+    for (int r = 0; r < rows; ++r) {
+        int id = pathPixels[r];
+        int c = id % cols;
+        seam[r] = c;
+    }
+    return seam;
+}
+
+// Horizontal seam = vertical on transposed energy
+std::vector<int> SeamCarver::findHorizontalSeamGraphCut(const cv::Mat& energy) {
+    cv::Mat transposed;
+    cv::transpose(energy, transposed);
+    // For a transposed (cols x rows) energy, we get seam[row'] = col'
+    // which corresponds to seam[col] = row in the original image.
+    return findVerticalSeamGraphCut(transposed);
+}
+
+// Resize using graph-based seams
+cv::Mat SeamCarver::resizeImageGraphCut(int newWidth, int newHeight) {
+    cv::Mat currentImage = image.clone();
+    int currentHeight = currentImage.rows;
+    int currentWidth = currentImage.cols;
+
+    int removeVertical = currentWidth - newWidth;
+    int removeHorizontal = currentHeight - newHeight;
+
+    if (removeVertical < 0 || removeHorizontal < 0) {
+        throw std::runtime_error(
+            "Graph-cut version only supports shrinking (no expansion).");
+    }
+
+    // Remove vertical seams
+    for (int k = 0; k < removeVertical; ++k) {
+        cv::Mat energy = calculateEnergy(currentImage);
+        auto seam = findVerticalSeamGraphCut(energy);
+        currentImage = removeVerticalSeam(currentImage, seam);
+    }
+
+    // Remove horizontal seams
+    for (int k = 0; k < removeHorizontal; ++k) {
+        cv::Mat energy = calculateEnergy(currentImage);
+        auto seam = findHorizontalSeamGraphCut(energy);
+        currentImage = removeHorizontalSeam(currentImage, seam);
+    }
+
+    return currentImage;
+}
+
 
 cv::Mat SeamCarver::removeVerticalSeam(const cv::Mat& img, const std::vector<int>& seam) {
     int rows = img.rows;

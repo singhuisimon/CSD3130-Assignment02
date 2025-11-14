@@ -8,101 +8,116 @@
 
 /**
  * @brief SeamCarver class for content-aware image resizing
- * 
- * Implements seam carving algorithm using both Dynamic Programming
- * and Greedy approaches for comparison.
+ *
+ * Implements seam carving algorithm using:
+ *  - Dynamic Programming (DP)
+ *  - Greedy
+ *  - Graph-based shortest path (Dijkstra on a pixel graph)
  */
 class SeamCarver {
 public:
     /**
-     * @brief Construct a new Seam Carver object
-     * @param imagePath Path to the input image
+     * @brief Construct from an image file on disk.
      */
     explicit SeamCarver(const std::string& imagePath);
 
     /**
-     * @brief Calculate energy map using gradient magnitude (Sobel filter)
-     * @param image Input image
-     * @return Energy map as CV_64F matrix
+     * @brief Compute gradient-based energy map for an image.
+     * The result is CV_64F, same size as input.
      */
-    cv::Mat calculateEnergy(const cv::Mat& image);
+    cv::Mat calculateEnergy(const cv::Mat& img);
+
+    // ----- DP seam finding -----
 
     /**
-     * @brief Find minimum energy vertical seam using Dynamic Programming
-     * @param energy Energy map
-     * @return Vector of column indices (one per row)
+     * @brief Find minimal-energy vertical seam using DP.
+     * @param energy CV_64F energy image
+     * @return seam[row] = column index of seam pixel in that row
      */
     std::vector<int> findVerticalSeamDP(const cv::Mat& energy);
 
     /**
-     * @brief Find vertical seam using Greedy Algorithm
-     * @param energy Energy map
-     * @return Vector of column indices (one per row)
+     * @brief Find minimal-energy horizontal seam using DP.
+     * Implemented via transpose + vertical DP.
+     * @param energy CV_64F energy image
+     * @return seam[col] = row index of seam pixel in that column
+     */
+    std::vector<int> findHorizontalSeamDP(const cv::Mat& energy);
+
+    // ----- Greedy seam finding -----
+
+    /**
+     * @brief Find a vertical seam using a simple greedy walk.
      */
     std::vector<int> findVerticalSeamGreedy(const cv::Mat& energy);
 
     /**
-     * @brief Find minimum energy horizontal seam using Dynamic Programming
-     * @param energy Energy map
-     * @return Vector of row indices (one per column)
-     */
-    std::vector<int> findHorizontalSeamDP(const cv::Mat& energy);
-
-    /**
-     * @brief Find horizontal seam using Greedy Algorithm
-     * @param energy Energy map
-     * @return Vector of row indices (one per column)
+     * @brief Find a horizontal seam using greedy walk.
      */
     std::vector<int> findHorizontalSeamGreedy(const cv::Mat& energy);
 
-    /**
-     * @brief Remove a vertical seam from the image
-     * @param image Input image
-     * @param seam Vector of column indices
-     * @return Image with seam removed (width reduced by 1)
-     */
-    cv::Mat removeVerticalSeam(const cv::Mat& image, const std::vector<int>& seam);
+    // ----- Graph-cut seam finding -----
+    // Model the image as a layered graph and run Dijkstra to find
+    // the minimum-cost s->t path; this is equivalent to computing a
+    // seam via a generic graph shortest-path method rather than DP.
 
     /**
-     * @brief Remove a horizontal seam from the image
-     * @param image Input image
-     * @param seam Vector of row indices
-     * @return Image with seam removed (height reduced by 1)
+     * @brief Find vertical seam using a graph shortest-path formulation.
+     * @param energy CV_64F energy image
+     * @return seam[row] = column index
      */
-    cv::Mat removeHorizontalSeam(const cv::Mat& image, const std::vector<int>& seam);
+    std::vector<int> findVerticalSeamGraphCut(const cv::Mat& energy);
 
     /**
-     * @brief Resize image to new dimensions using seam carving
-     * @param newWidth Target width
-     * @param newHeight Target height
-     * @param useDP Use Dynamic Programming (true) or Greedy (false)
-     * @return Resized image
+     * @brief Find horizontal seam using graph formulation.
+     * Implemented via transpose + vertical graph search.
      */
-    cv::Mat resizeImage(int newWidth, int newHeight, bool useDP = true);
+    std::vector<int> findHorizontalSeamGraphCut(const cv::Mat& energy);
+
+    // ----- Image modification -----
 
     /**
-     * @brief Visualize a seam on the image
-     * @param seam Vector of indices
-     * @param isVertical True for vertical seam, false for horizontal
-     * @return Image with seam highlighted in red
+     * @brief Remove a vertical seam from the given image.
      */
-    cv::Mat visualizeSeam(const std::vector<int>& seam, bool isVertical = true);
+    cv::Mat removeVerticalSeam(const cv::Mat& img, const std::vector<int>& seam);
 
     /**
-     * @brief Get the current image
-     * @return Current image
+     * @brief Remove a horizontal seam from the given image.
      */
+    cv::Mat removeHorizontalSeam(const cv::Mat& img, const std::vector<int>& seam);
+
+    /**
+     * @brief Resize the internal image using DP or greedy seams.
+     * @param newWidth  desired width
+     * @param newHeight desired height
+     * @param useDP true = DP, false = greedy
+     */
+    cv::Mat resizeImage(int newWidth, int newHeight, bool useDP);
+
+    /**
+     * @brief Resize the internal image using the graph-based seam finder.
+     * Only shrinking (newWidth <= originalWidth, newHeight <= originalHeight)
+     * is supported.
+     */
+    cv::Mat resizeImageGraphCut(int newWidth, int newHeight);
+
+    /**
+     * @brief Visualize a single seam in red over the current image.
+     * @param seam      seam indices
+     * @param isVertical true for vertical (one column index per row),
+     *                   false for horizontal (one row index per column)
+     */
+    cv::Mat visualizeSeam(const std::vector<int>& seam, bool isVertical);
+
+    // @brief Get the current working image (after any resizing).
     cv::Mat getImage() const { return image.clone(); }
 
-    /**
-     * @brief Get the original image
-     * @return Original image
-     */
+    // @brief Get the original, unmodified image.
     cv::Mat getOriginalImage() const { return originalImage.clone(); }
 
 private:
-    cv::Mat image;          ///< Current working image
-    cv::Mat originalImage;  ///< Original image (preserved)
+    cv::Mat image;          // Current working image
+    cv::Mat originalImage;  // Original image (preserved)
 };
 
 #endif // SEAM_CARVER_H
